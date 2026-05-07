@@ -1,7 +1,3 @@
-"""
-3D Viewer for Simulation Data
-"""
-
 import json
 import os
 import queue
@@ -13,10 +9,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 8765
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DATA_DIR = os.path.join(ROOT_DIR, "data")
-MA_DATA_FILE = os.path.join(DATA_DIR, "ma_sim_data.json")
-RSI_DATA_FILE = os.path.join(DATA_DIR, "rsi_sim_data.json")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+MA_DATA_FILE = os.path.join(DATA_DIR, "live_data.json")
+RSI_DATA_FILE = os.path.join(DATA_DIR, "rsi_live_data.json")
 TMPL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_template.html")
 
 _clients = []
@@ -37,8 +32,15 @@ SYMBOLS = [
 
 def load_template():
     global _template
-    with open(TMPL_FILE, "r", encoding="utf-8") as f:
-        _template = f.read()
+    template_path = TMPL_FILE
+    if not os.path.exists(template_path):
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "viewer_template.html")
+    
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            _template = f.read()
+    else:
+        _template = """<!DOCTYPE html><html><head><title>Viewer</title></head><body><h1>Trading Viewer</h1><div id="data"></div><script>fetch('/data').then(r=>r.json()).then(d=>{document.getElementById('data').innerHTML=JSON.stringify(d);});</script></body></html>"""
 
 
 def broadcast(data: dict):
@@ -65,12 +67,17 @@ def switch_strategy(strategy: str):
     global _current_strategy, _current_data_file, _latest
     _current_strategy = strategy
     _current_data_file = MA_DATA_FILE if strategy == "ma" else RSI_DATA_FILE
+    print(f"\n  🔄 Switched to {strategy.upper()} strategy")
+    print(f"  📁 Reading from: {_current_data_file}")
     
     if os.path.exists(_current_data_file):
-        with open(_current_data_file, "r") as f:
-            raw_data = json.load(f)
-        _latest = filter_data(raw_data)
-        broadcast(_latest)
+        try:
+            with open(_current_data_file, "r") as f:
+                raw_data = json.load(f)
+            _latest = filter_data(raw_data)
+            broadcast(_latest)
+        except Exception as e:
+            print(f"  Error loading {strategy} data: {e}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -94,6 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             q = queue.Queue(maxsize=20)
             with _lock:
@@ -142,14 +150,21 @@ class Handler(BaseHTTPRequestHandler):
 def watch_file():
     last_mtime = 0
     while True:
-        if os.path.exists(_current_data_file):
-            mtime = os.path.getmtime(_current_data_file)
-            if mtime > last_mtime:
-                last_mtime = mtime
-                with open(_current_data_file, "r") as f:
-                    raw_data = json.load(f)
-                _latest = filter_data(raw_data)
-                broadcast(_latest)
+        try:
+            if os.path.exists(_current_data_file):
+                mtime = os.path.getmtime(_current_data_file)
+                if mtime > last_mtime:
+                    last_mtime = mtime
+                    with open(_current_data_file, "r") as f:
+                        raw_data = json.load(f)
+                    _latest = filter_data(raw_data)
+                    broadcast(_latest)
+                    
+                    total = sum(_latest.get("profits", {}).values())
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    print(f"\r  [VIEWER] {_current_strategy.upper()} TOTAL: ${total:+.2f}                    ", end="", flush=True)
+        except:
+            pass
         time.sleep(0.5)
 
 
@@ -157,20 +172,43 @@ def main():
     load_template()
     os.makedirs(DATA_DIR, exist_ok=True)
     
+    # Start with MA strategy if available
+    if os.path.exists(MA_DATA_FILE):
+        switch_strategy("ma")
+    elif os.path.exists(RSI_DATA_FILE):
+        switch_strategy("rsi")
+    
     threading.Thread(target=watch_file, daemon=True).start()
     
-    server = socketserver.ThreadingTCPServer(("", PORT), Handler)
-    url = f"http://localhost:{PORT}"
+    # Try to bind to port, if fails try next port
+    port = PORT
+    server = None
+    for attempt in range(5):
+        try:
+            server = socketserver.ThreadingTCPServer(("", port), Handler)
+            break
+        except OSError:
+            print(f"  Port {port} in use, trying {port + 1}...")
+            port += 1
+    
+    if server is None:
+        print("  ❌ Could not find available port")
+        return
+    
+    url = f"http://localhost:{port}"
     
     print(f"\n  🚀 3D VIEWER → {url}")
-    print(f"  📁 Data: {DATA_DIR}\n")
+    print(f"  📁 MA data: {MA_DATA_FILE}")
+    print(f"  📁 RSI data: {RSI_DATA_FILE}")
+    print(f"  💡 Switch strategies using buttons in viewer\n")
     
-    threading.Timer(1.0, webbrowser.open, args=[url]).start()
+    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n  Viewer stopped")
+        server.shutdown()
 
 
 if __name__ == "__main__":

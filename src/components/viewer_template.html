@@ -388,50 +388,6 @@ function clearScene() {
 // ═══════════════════════════════════════════════════════════════
 //  FIX #3: Build vertical "web" connectors between adjacent symbols at each timestep
 // ═══════════════════════════════════════════════════════════════
-function buildConnectors(symPtsMap, now_ts) {
-  // Collect all unique timestamps across all symbols
-  const allTs = new Set();
-  symPtsMap.forEach(pts => pts.forEach(p => allTs.add(p.userData_ts)));
-  const sortedTs = [...allTs].sort((a,b)=>a-b);
-
-  // Sample evenly — too many connectors = chaos, use every Nth timestamp
-  const step = Math.max(1, Math.floor(sortedTs.length / 20));
-
-  const connectorObjects = [];
-  const symKeys = [...symPtsMap.keys()];
-
-  sortedTs.forEach((ts, ti) => {
-    if (ti % step !== 0) return;
-    const xPos = (ts - now_ts) / 3600;
-    const vertPts = [];
-
-    symKeys.forEach(sym => {
-      const pts = symPtsMap.get(sym);
-      // Find closest point in time
-      const match = pts.reduce((best, p) => Math.abs(p.userData_ts - ts) < Math.abs(best.userData_ts - ts) ? p : best, pts[0]);
-      if (match) vertPts.push(new THREE.Vector3(match.x, match.y, match.z));
-    });
-
-    if (vertPts.length < 2) return;
-
-    // Sort by z to connect adjacent lines
-    vertPts.sort((a,b) => a.z - b.z);
-
-    // Create thin line connecting all symbols at this timestamp
-    const geo = new THREE.BufferGeometry().setFromPoints(vertPts);
-    const mat = new THREE.LineBasicMaterial({
-      color: 0x00ff41,
-      transparent: true,
-      opacity: 0.08
-    });
-    const line = new THREE.Line(geo, mat);
-    line.userData = { isConnector: true };
-    scene.add(line);
-    connectorObjects.push(line);
-  });
-
-  return connectorObjects;
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  MAIN RENDER
@@ -519,9 +475,15 @@ function render3D(data) {
     const div   = document.createElement('div');
     div.textContent = `${sym.slice(0,3)}/${sym.slice(3)} ${short}`;
     Object.assign(div.style, {
-      color: pnlColor(pnl), fontSize:'9px', fontWeight:'700', fontFamily:'JetBrains Mono,monospace',
-      background:'rgba(1,1,5,.85)', padding:'3px 9px', borderRadius:'12px',
-      border:`1px solid ${pnlColor(pnl)}`, cursor:'pointer'
+      color: pnlColor(pnl), fontSize:'9px', 
+      fontWeight:'700', 
+      fontFamily:'JetBrains Mono,monospace',
+      background:'rgba(1,1,5,.85)', 
+      padding:'3px 9px', 
+      borderRadius:'12px',
+      border:`1px solid ${pnlColor(pnl)}`, 
+      cursor:'pointer',
+      opacity: '0' 
     });
     div.addEventListener('mouseenter', e => showTip(sym, data, e));
     div.addEventListener('mousemove',  updateTipPos);
@@ -535,7 +497,7 @@ function render3D(data) {
   });
 
   // FIX #3: build cross-connectors between all symbol lines
-  const connectors = buildConnectors(symPtsMap, now_ts);
+
 
   // ── FIX #1 + #4: Aggregate total equity curve ──────────────────
   // Uses SAME yScale as per-symbol lines; z = front face of the 3D block (z = 14)
@@ -586,23 +548,17 @@ function render3D(data) {
     }
   }
 
-  updateVisibility(connectors);
+  updateVisibility();
   buildFilterPanel(syms, data);
 }
 
 // FIX #2: updateVisibility now controls ALL objects (meshes + label) per symbol
-function updateVisibility(connectors) {
+function updateVisibility() {
   symbolMeshes.forEach(({ objects, label }, sym) => {
     const v = visibleSyms.has(sym);
-    objects.forEach(o => { o.visible = v; });  // spheres, tubes, tails — all together
+    objects.forEach(o => { if (o) o.visible = v; });
     if (label) label.visible = v;
   });
-
-  // Connectors: show if at least 2 symbols visible
-  if (connectors) {
-    const anyVisible = visibleSyms.size >= 2;
-    connectors.forEach(c => { c.visible = anyVisible; });
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════
