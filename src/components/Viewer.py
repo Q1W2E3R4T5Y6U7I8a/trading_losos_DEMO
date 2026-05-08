@@ -154,19 +154,28 @@ def watch_file():
             if os.path.exists(_current_data_file):
                 mtime = os.path.getmtime(_current_data_file)
                 if mtime > last_mtime:
-                    last_mtime = mtime
-                    with open(_current_data_file, "r") as f:
-                        raw_data = json.load(f)
-                    _latest = filter_data(raw_data)
-                    broadcast(_latest)
+                    # Read with retry for Windows locks
+                    raw_data = None
+                    for attempt in range(3):
+                        try:
+                            with open(_current_data_file, "r") as f:
+                                raw_data = json.load(f)
+                            break
+                        except (PermissionError, json.JSONDecodeError):
+                            time.sleep(0.05)
                     
-                    total = sum(_latest.get("profits", {}).values())
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    print(f"\r  [VIEWER] {_current_strategy.upper()} TOTAL: ${total:+.2f}                    ", end="", flush=True)
+                    if raw_data:
+                        last_mtime = mtime
+                        filtered = filter_data(raw_data)
+                        _latest = filtered
+                        broadcast(filtered)
+                        
+                        total = sum(filtered.get("profits", {}).values())
+                        ts = datetime.now().strftime("%H:%M:%S")
+                        print(f"\r  [VIEWER] {_current_strategy.upper()} TOTAL: ${total:+.2f}                    ", end="", flush=True)
         except:
             pass
         time.sleep(0.5)
-
 
 def main():
     load_template()

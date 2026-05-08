@@ -13,6 +13,7 @@ import signal
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 COMPONENTS_DIR = os.path.join(ROOT_DIR, "src", "components")
 DATA_DIR = os.path.join(ROOT_DIR, "data")
+VIEWER_PORT = 8765
 
 def kill_process_on_port(port):
     """Kill any process using the specified port"""
@@ -25,12 +26,28 @@ def kill_process_on_port(port):
                     pid = parts[-1]
                     if pid.isdigit():
                         subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
-                        print(f"  Killed process on port {port} (PID: {pid})")
-                        time.sleep(1)
+                        print(f"  🔧 Freed port {port} (PID: {pid})")
+                        time.sleep(0.5)
         else:
             subprocess.run(f'fuser -k {port}/tcp', shell=True, capture_output=True)
+            time.sleep(0.5)
     except:
         pass
+
+def stop_processes(processes):
+    """Gracefully stop all running processes"""
+    for name, proc in processes:
+        if proc.poll() is None:
+            print(f"  ⏹️  Stopping {name}...")
+            if sys.platform == "win32":
+                proc.terminate()
+            else:
+                proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 def main():
     print("=" * 70)
@@ -40,20 +57,24 @@ def main():
     
     # Ask for simulation duration
     print("\n  Hours to simulate (default 24, max 168):")
-    hours_input = input("  > ").strip()
-    sim_hours = int(hours_input) if hours_input else 24
-    sim_hours = max(1, min(168, sim_hours))
+    try:
+        hours_input = input("  > ").strip()
+        sim_hours = int(hours_input) if hours_input else 24
+        sim_hours = max(1, min(168, sim_hours))
+    except ValueError:
+        sim_hours = 24
+        print("  ⚠️  Invalid input, using default: 24 hours")
     
-    # Kill any existing process on port 8765
-    kill_process_on_port(8765)
+    # Kill any existing process on viewer port
+    kill_process_on_port(VIEWER_PORT)
     
-    # Set environment variable
+    # Set environment variable for strategies
     env = os.environ.copy()
     env["SIMULATION_HOURS"] = str(sim_hours)
     
     print(f"\n  ⏱️  Simulating {sim_hours} hours of trading")
-    print("  📊 Both strategies will run simultaneously")
-    print("  🌐 Viewer will open at http://localhost:8765\n")
+    print(f"  📊 Both strategies will run simultaneously")
+    print(f"  🌐 Viewer will open at http://localhost:{VIEWER_PORT}\n")
     
     # Ensure data directory exists
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -61,31 +82,30 @@ def main():
     processes = []
     
     try:
-        # Launch MA Strategy
+        # Launch strategies
         print("  Launching MA Crossover Strategy...")
-        ma_strategy = subprocess.Popen(
+        ma_proc = subprocess.Popen(
             [sys.executable, os.path.join(COMPONENTS_DIR, "MA_strategy.py")],
             env=env
         )
-        processes.append(("MA Strategy", ma_strategy))
+        processes.append(("MA Strategy", ma_proc))
         time.sleep(2)
         
-        # Launch RSI Strategy
         print("  Launching RSI Mean Reversion Strategy...")
-        rsi_strategy = subprocess.Popen(
+        rsi_proc = subprocess.Popen(
             [sys.executable, os.path.join(COMPONENTS_DIR, "RSI_strategy.py")],
             env=env
         )
-        processes.append(("RSI Strategy", rsi_strategy))
+        processes.append(("RSI Strategy", rsi_proc))
         time.sleep(2)
         
-        # Launch Viewer
         print("  Launching 3D Viewer...")
-        viewer = subprocess.Popen(
+        viewer_proc = subprocess.Popen(
             [sys.executable, os.path.join(COMPONENTS_DIR, "Viewer.py")]
         )
-        processes.append(("Viewer", viewer))
+        processes.append(("Viewer", viewer_proc))
         
+        # Status display
         print("\n  ┌" + "─" * 68 + "┐")
         print("  │  SIMULATION RUNNING - Historical Data Mode              │")
         for name, proc in processes:
@@ -93,39 +113,37 @@ def main():
         print("  ├" + "─" * 68 + "┤")
         print("  │  🔷 NO REAL TRADING - Using cached MT5 data             │")
         print(f"  │  ⏱️  Simulating {sim_hours} hours of past data              │")
-        print("  │  📡 Viewer: http://localhost:8765                      │")
+        print(f"  │  📡 Viewer: http://localhost:{VIEWER_PORT}                      │")
         print("  │                                                        │")
         print("  │  Press Ctrl+C to stop simulation early                 │")
         print("  └" + "─" * 68 + "┘")
         print("\n  Waiting for simulations to complete...\n")
         
-        # Wait for both strategies to finish
-        ma_strategy.wait()
-        rsi_strategy.wait()
+        # Wait for strategies (viewer runs indefinitely)
+        ma_proc.wait()
+        rsi_proc.wait()
         
         print("\n  ✅ Both simulations completed!")
+        print(f"  🌐 Viewer still running at http://localhost:{VIEWER_PORT}")
+        print("  Press Ctrl+C to stop the viewer and exit...")
         
-        print("\n  Press Enter to stop the viewer and exit...")
-        input()
+        # Keep running until user interrupts (viewer is still alive)
+        try:
+            while viewer_proc.poll() is None:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
         
     except KeyboardInterrupt:
-        print("\n\n  Shutting down simulation...")
+        print("\n\n  🛑 Simulation interrupted by user")
         
     finally:
-        for name, proc in processes:
-            if proc.poll() is None:
-                print(f"  Stopping {name}...")
-                proc.terminate()
-                time.sleep(1)
-                if proc.poll() is None:
-                    proc.kill()
+        # Clean shutdown
+        stop_processes(processes)
+        kill_process_on_port(VIEWER_PORT)
         
-        # Final cleanup of port
-        kill_process_on_port(8765)
-        
-        print("\n  All processes stopped.")
-        print("  ✅ Simulation complete!")
-        print(f"  📁 Data saved to: {DATA_DIR}")
+        print("\n  ✅ All processes stopped")
+        print(f"  📁 Simulation data saved to: {DATA_DIR}")
 
 
 if __name__ == "__main__":

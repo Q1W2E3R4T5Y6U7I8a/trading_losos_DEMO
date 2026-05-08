@@ -129,7 +129,6 @@ def calc_pnl(symbol, order_type, open_price, close_price):
     pip_value = 0.10
     return round(pips * pip_value, 4)
 
-
 def save_data(sim_time, profits, history, trades, open_positions, progress):
     payload = {
         "timestamp": sim_time.timestamp(),
@@ -141,10 +140,22 @@ def save_data(sim_time, profits, history, trades, open_positions, progress):
         "progress": progress,
     }
     tmp = DATA_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(payload, f)
-    os.replace(tmp, DATA_FILE)
-
+    try:
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        # Windows-safe atomic replace with retry
+        for attempt in range(5):
+            try:
+                os.replace(tmp, DATA_FILE)
+                break
+            except PermissionError:
+                time.sleep(0.05)
+        else:
+            # Fallback: write directly
+            with open(DATA_FILE, "w") as f:
+                json.dump(payload, f)
+    except Exception as e:
+        print(f"\n  ⚠️ Save error: {e}")
 
 def main():
     print("=" * 70)
@@ -164,7 +175,8 @@ def main():
     
     data_cache.load_all_data(hours_back=72)
     
-    sim_start = datetime.now() - timedelta(hours=24)
+    sim_hours = int(os.environ.get("SIMULATION_HOURS", "24"))
+    sim_start = datetime.now() - timedelta(hours=sim_hours)
     current_sim = sim_start
     end_time = datetime.now()
     
@@ -253,7 +265,7 @@ def main():
                 else:
                     live_profits[symbol] = round(cumulative_pnl[symbol], 4)
             
-            progress = (current_sim - sim_start).total_seconds() / 86400
+            progress = (current_sim - sim_start).total_seconds() / (sim_hours * 3600)
             save_data(current_sim, live_profits, trade_history, closed_trades[-200:], open_positions, progress)
             
             total = sum(cumulative_pnl.values())
